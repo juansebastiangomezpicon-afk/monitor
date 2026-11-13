@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Monitor de Paciente</title>
+<style>
+  :root {
+    --bg: #0b1016; --panel: #121a23; --borde: #1f2b38; --texto: #e6edf3; --tenue: #8b9bab;
+    --temp: #ff7a45; --hum: #3fb6ff; --umbral: #ff4d6d;
+    --ok: #2ecc71; --medio: #f5b82e; --mal: #ff4d6d;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--texto);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  body { display: flex; flex-direction: column; padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+
+  header { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--borde); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; flex: 1; min-width: 150px; }
+  .estado { font-size: 12px; color: var(--tenue); display: flex; align-items: center; gap: 6px; }
+  .punto { width: 9px; height: 9px; border-radius: 50%; background: #555; }
+  .punto.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  button { background: #1d2a38; color: var(--texto); border: 1px solid #2c3d50; border-radius: 8px;
+    padding: 7px 12px; font-size: 13px; cursor: pointer; }
+  button.primario { background: #1f6feb; border-color: #1f6feb; }
+  button:disabled { opacity: .45; }
+
+  #alerta { display: none; padding: 10px 16px; font-weight: 700; text-align: center; letter-spacing: .5px;
+    background: var(--mal); color: #fff; animation: titila .7s steps(2) infinite; }
+  #alerta.on { display: block; }
+  @keyframes titila { 50% { background: #7a0f22; } }
+
+  main { flex: 1; display: grid; grid-template-columns: minmax(150px, 250px) 1fr; min-height: 0; }
+  aside { border-right: 1px solid var(--borde); padding: 10px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+  .tarjeta { background: var(--panel); border: 1px solid var(--borde); border-radius: 10px; padding: 10px; }
+  .nombre { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; }
+  .color { width: 14px; height: 4px; border-radius: 2px; flex: none; }
+  .valor { font-size: 30px; font-weight: 700; margin: 4px 0 2px; font-variant-numeric: tabular-nums; }
+  .valor small { font-size: 14px; color: var(--tenue); font-weight: 500; }
+  .tendencia { font-size: 12px; color: var(--tenue); }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin: 8px 0; font-size: 11px; color: var(--tenue); }
+  .stats b { display: block; color: var(--texto); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .chip { font-size: 11px; padding: 3px 7px; border-radius: 99px; border: 1px solid; }
+  .chip.ok { color: var(--ok); border-color: var(--ok); }
+  .chip.medio { color: var(--medio); border-color: var(--medio); }
+  .chip.mal { color: var(--mal); border-color: var(--mal); }
+  .chip.nd { color: var(--tenue); border-color: var(--borde); }
+  .nota { font-size: 11px; color: var(--tenue); line-height: 1.4; }
+
+  #zonaGrafica { position: relative; min-width: 0; min-height: 260px; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #vacio { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    text-align: center; padding: 20px; color: var(--tenue); font-size: 14px; line-height: 1.5; }
+
+  @media (max-width: 520px) {
+    main { grid-template-columns: 150px 1fr; }
+    .valor { font-size: 22px; }
+    .stats { grid-template-columns: 1fr; gap: 2px; }
+    .stats div { display: flex; justify-content: space-between; }
+    .stats b { display: inline; font-size: 12px; }
+    header h1 { font-size: 14px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>🩺 Monitor de Paciente</h1>
+  <span class="estado"><span class="punto" id="punto"></span><span id="txtEstado">Desconectado</span></span>
+  <button class="primario" id="btnConectar">Conectar</button>
+  <button id="btnPrueba" disabled title="El ESP32 simula 38.5 °C durante 15 s">Simular fiebre</button>
+  <button id="btnDemo">Modo demo</button>
+</header>
+<div id="alerta">⚠️ POSIBLE FIEBRE — <span id="alertaTxt"></span> <button id="btnSilenciar" style="margin-left:8px">🔇 Silenciar</button></div>
+
+<main>
+  <aside>
+    <div class="tarjeta">
+      <div class="nombre"><span class="color" style="background:var(--temp)"></span>Temperatura</div>
+      <div class="valor" id="vT">--<small> °C</small></div>
+      <div class="tendencia" id="tT">tendencia: --</div>
+      <div class="stats">
+        <div>Mín<b id="minT">--</b></div><div>Prom<b id="promT">--</b></div><div>Máx<b id="maxT">--</b></div>
+      </div>
+      <div class="chips"><span class="chip nd" id="nivT">Nivel: --</span><span class="chip nd" id="estT">Estabilidad: --</span></div>
+    </div>
+
+    <div class="tarjeta">
+      <div class="nombre"><span class="color" style="background:var(--hum)"></span>Humedad</div>
+      <div class="valor" id="vH">--<small> %</small></div>
+      <div class="tendencia" id="tH">tendencia: --</div>
+      <div class="stats">
+        <div>Mín<b id="minH">--</b></div><div>Prom<b id="promH">--</b></div><div>Máx<b id="maxH">--</b></div>
+      </div>
+      <div class="chips"><span class="chip nd" id="nivH">Nivel: --</span><span class="chip nd" id="estH">Estabilidad: --</span></div>
+    </div>
+
+    <div class="tarjeta">
+      <div class="nombre"><span class="color" style="background:var(--umbral);height:0;border-top:2px dashed var(--umbral)"></span>Umbral de fiebre</div>
+      <div class="valor" id="vU">--<small> °C</small></div>
+      <div class="nota">Si la temperatura pasa esta línea suena la alarma.</div>
+    </div>
+
+    <div class="nota">
+      Estadísticas del último minuto.<br>
+      <b>Estable</b>: casi no cambia. <b>Variable</b>: cambia un poco. <b>Inestable</b>: cambia mucho.<br>
+      Temperatura normal: 18–30 °C. Humedad confortable: 30–60 %.
+    </div>
+  </aside>
+
+  <section id="zonaGrafica">
+    <canvas id="grafica"></canvas>
+    <div id="vacio">Toca <b>&nbsp;Conectar&nbsp;</b> y elige “Los mejores del mundo”.<br>
+      En iPhone abre esta página con la app <b>Bluefy</b>.</div>
+  </section>
+</main>
+
+<script>
+const SERVICIO = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const TX_UUID  = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';   // el ESP32 avisa aquí
+const RX_UUID  = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';   // el celular escribe aquí
+const VENTANA_GRAFICA = 120;   // segundos visibles
+const VENTANA_STATS   = 60;    // segundos para estadísticas
+
+const $ = id => document.getElementById(id);
+let datos = [];                // {s: segundos, t, h, u}
+let inicio = performance.now();
+let dispositivo = null, rx = null, buffer = '';
+let demoTimer = null, silenciado = false, audioCtx = null, alarmaOsc = null;
+
+// ---------------------------------------------------------------- Bluetooth
+$('btnConectar').onclick = async () => {
+  if (dispositivo && dispositivo.gatt.connected) { dispositivo.gatt.disconnect(); return; }
+  if (!navigator.bluetooth) {
+    alert('Este navegador no tiene Bluetooth.\n\niPhone: abre esta página con la app Bluefy.\nPC: usa Google Chrome o Edge.');
+    return;
+  }
+  activarAudio();
+  try {
+    estado('Buscando…', false);
+    dispositivo = await navigator.bluetooth.requestDevice({ filters: [{ services: [SERVICIO] }] });
+    dispositivo.addEventListener('gattserverdisconnected', alDesconectar);
+    const servidor = await dispositivo.gatt.connect();
+    const servicio = await servidor.getPrimaryService(SERVICIO);
+    const tx = await servicio.getCharacteristic(TX_UUID);
+    rx = await servicio.getCharacteristic(RX_UUID);
+    await tx.startNotifications();
+    tx.addEventListener('characteristicvaluechanged', e => recibir(new TextDecoder().decode(e.target.value)));
+    pararDemo();
+    reiniciarDatos();
+    estado('Conectado a ' + (dispositivo.name || 'ESP32'), true);
+    $('btnConectar').textContent = 'Desconectar';
+    $('btnPrueba').disabled = false;
+  } catch (err) {
+    estado('Desconectado', false);
+    if (err.name !== 'NotFoundError') alert('No se pudo conectar: ' + err.message);
+  }
+};
+
+function alDesconectar() {
+  estado('Desconectado', false);
+  $('btnConectar').textContent = 'Conectar';
+  $('btnPrueba').disabled = true;
+  rx = null;
+}
+
+$('btnPrueba').onclick = async () => {
+  if (rx) await rx.writeValue(new TextEncoder().encode('P'));
+};
+
+function estado(txt, on) { $('txtEstado').textContent = txt; $('punto').classList.toggle('on', on); }
+
+// Las notificaciones pueden llegar partidas: se arma la línea hasta el "\n"
+function recibir(texto) {
+  buffer += texto;
+  let i;
+  while ((i = buffer.indexOf('\n')) >= 0) {
+    const linea = buffer.slice(0, i).trim();
+    buffer = buffer.slice(i + 1);
+    const p = linea.split(',').map(Number);
+    if (p.length >= 3 && p.every(n => !isNaN(n))) agregar(p[0], p[1], p[2]);
+  }
+}
+
+// ---------------------------------------------------------------- datos y estadísticas
+function reiniciarDatos() { datos = []; inicio = performance.now(); }
+
+function agregar(t, h, u) {
+  const s = (performance.now() - inicio) / 1000;
+  datos.push({ s, t, h, u });
+  while (datos.length && s - datos[0].s > VENTANA_GRAFICA + 5) datos.shift();
+  $('vacio').style.display = 'none';
+  actualizarPanel();
+}
+
+function estadisticas(clave) {
+  const ahora = datos[datos.length - 1].s;
+  const v = datos.filter(d => ahora - d.s <= VENTANA_STATS).map(d => d[clave]);
+  const n = v.length;
+  const prom = v.reduce((a, b) => a + b, 0) / n;
+  const desv = Math.sqrt(v.reduce((a, b) => a + (b - prom) ** 2, 0) / n);
+  // tendencia: promedio de los últimos 10 s contra los 10 s anteriores
+  const rec = datos.filter(d => ahora - d.s <= 10).map(d => d[clave]);
+  const ant = datos.filter(d => ahora - d.s > 10 && ahora - d.s <= 20).map(d => d[clave]);
+  const m = a => a.reduce((x, y) => x + y, 0) / a.length;
+  const tend = ant.length ? m(rec) - m(ant) : 0;
+  return { min: Math.min(...v), max: Math.max(...v), prom, desv, tend, n };
+}
+
+function chip(el, texto, clase) { el.textContent = texto; el.className = 'chip ' + clase; }
+
+function estabilidad(desv, lim1, lim2, n) {
+  if (n < 10) return ['Estabilidad: midiendo…', 'nd'];
+  if (desv < lim1) return ['Estable', 'ok'];
+  if (desv < lim2) return ['Variable', 'medio'];
+  return ['Inestable', 'mal'];
+}
+
+function flecha(tend, sensib) {
+  if (tend > sensib) return '▲ subiendo';
+  if (tend < -sensib) return '▼ bajando';
+  return '● estable';
+}
+
+function actualizarPanel() {
+  const u = datos[datos.length - 1];
+  const T = estadisticas('t'), H = estadisticas('h');
+
+  $('vT').innerHTML = u.t.toFixed(1) + '<small> °C</small>';
+  $('minT').textContent = T.min.toFixed(1); $('promT').textContent = T.prom.toFixed(1); $('maxT').textContent = T.max.toFixed(1);
+  $('tT').textContent = 'tendencia: ' + flecha(T.tend, 0.15) + '  ·  σ ' + T.desv.toFixed(2);
+  if (u.t > u.u)      chip($('nivT'), 'Posible fiebre', 'mal');
+  else if (u.t < 18)  chip($('nivT'), 'Baja', 'medio');
+  else                chip($('nivT'), 'Normal', 'ok');
+  chip($('estT'), ...estabilidad(T.desv, 0.3, 0.8, T.n));
+
+  $('vH').innerHTML = u.h.toFixed(0) + '<small> %</small>';
+  $('minH').textContent = H.min.toFixed(0); $('promH').textContent = H.prom.toFixed(0); $('maxH').textContent = H.max.toFixed(0);
+  $('tH').textContent = 'tendencia: ' + flecha(H.tend, 1) + '  ·  σ ' + H.desv.toFixed(1);
+  if (u.h < 30)       chip($('nivH'), 'Seca', 'medio');
+  else if (u.h > 60)  chip($('nivH'), 'Alta', 'medio');
+  else                chip($('nivH'), 'Confortable', 'ok');
+  chip($('estH'), ...estabilidad(H.desv, 2, 5, H.n));
+
+  $('vU').innerHTML = u.u.toFixed(0) + '<small> °C</small>';
+
+  const fiebre = u.t > u.u;
+  $('alerta').classList.toggle('on', fiebre);
+  $('alertaTxt').textContent = u.t.toFixed(1) + ' °C';
+  if (fiebre && !silenciado) sonarAlarma(); else pararAlarma();
+  if (!fiebre) silenciado = false;
+}
+
+// ---------------------------------------------------------------- alarma sonora
+function activarAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+function sonarAlarma() {
+  if (!audioCtx || alarmaOsc) return;
+  const osc = audioCtx.createOscillator(), gan = audioCtx.createGain(), lfo = audioCtx.createOscillator(), lfoG = audioCtx.createGain();
+  osc.type = 'square'; osc.frequency.value = 880;
+  lfo.type = 'square'; lfo.frequency.value = 2.5; lfoG.gain.value = 300;   // sirena: sube y baja
+  lfo.connect(lfoG); lfoG.connect(osc.frequency);
+  gan.gain.value = 0.08;
+  osc.connect(gan); gan.connect(audioCtx.destination);
+  osc.start(); lfo.start();
+  alarmaOsc = { osc, lfo };
+  if (navigator.vibrate) navigator.vibrate([300, 200, 300]);
+}
+function pararAlarma() {
+  if (!alarmaOsc) return;
+  alarmaOsc.osc.stop(); alarmaOsc.lfo.stop(); alarmaOsc = null;
+}
+$('btnSilenciar').onclick = () => { silenciado = true; pararAlarma(); };
+
+// ---------------------------------------------------------------- gráfica
+const cv = $('grafica'), ctx = cv.getContext('2d');
+function dibujar() {
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  if (!datos.length) return requestAnimationFrame(dibujar);
+
+  const css = getComputedStyle(document.documentElement);
+  const cT = css.getPropertyValue('--temp'), cH = css.getPropertyValue('--hum'), cU = css.getPropertyValue('--umbral');
+  const m = { izq: 40, der: 40, arr: 14, aba: 26 };
+  const gw = W - m.izq - m.der, gh = H - m.arr - m.aba;
+  const ahora = (performance.now() - inicio) / 1000;
+  const x = s => m.izq + gw - (ahora - s) / VENTANA_GRAFICA * gw;
+
+  // escalas automáticas: °C a la izquierda, % a la derecha
+  const ts = datos.map(d => d.t).concat(datos[datos.length - 1].u);
+  let tMin = Math.floor(Math.min(...ts) - 1), tMax = Math.ceil(Math.max(...ts) + 1);
+  const yT = v => m.arr + gh - (v - tMin) / (tMax - tMin) * gh;
+  const yH = v => m.arr + gh - v / 100 * gh;
+
+  ctx.font = '11px -apple-system, Segoe UI, sans-serif';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = m.arr + gh * i / 4;
+    ctx.strokeStyle = '#1f2b38'; ctx.beginPath(); ctx.moveTo(m.izq, y); ctx.lineTo(m.izq + gw, y); ctx.stroke();
+    ctx.fillStyle = cT; ctx.textAlign = 'right'; ctx.fillText((tMax - (tMax - tMin) * i / 4).toFixed(1), m.izq - 5, y + 4);
+    ctx.fillStyle = cH; ctx.textAlign = 'left';  ctx.fillText((100 - 25 * i) + '%', m.izq + gw + 5, y + 4);
+  }
+  ctx.fillStyle = '#8b9bab'; ctx.textAlign = 'center';
+  for (let s = 0; s <= VENTANA_GRAFICA; s += 30) ctx.fillText(s ? '-' + s + 's' : 'ahora', m.izq + gw - s / VENTANA_GRAFICA * gw, H - 8);
+
+  ctx.save(); ctx.beginPath(); ctx.rect(m.izq, m.arr - 2, gw, gh + 4); ctx.clip();
+  // umbral (línea punteada)
+  ctx.setLineDash([6, 5]); ctx.strokeStyle = cU; ctx.lineWidth = 1.5;
+  const yu = yT(datos[datos.length - 1].u);
+  ctx.beginPath(); ctx.moveTo(m.izq, yu); ctx.lineTo(m.izq + gw, yu); ctx.stroke(); ctx.setLineDash([]);
+  // curvas
+  const curva = (color, f) => {
+    ctx.strokeStyle = color; ctx.lineWidth = 2.2; ctx.lineJoin = 'round'; ctx.beginPath();
+    datos.forEach((d, i) => i ? ctx.lineTo(x(d.s), f(d)) : ctx.moveTo(x(d.s), f(d)));
+    ctx.stroke();
+    const u = datos[datos.length - 1];
+    ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x(u.s), f(u), 4, 0, 7); ctx.fill();
+  };
+  curva(cH, d => yH(d.h));
+  curva(cT, d => yT(d.t));
+  ctx.restore();
+  requestAnimationFrame(dibujar);
+}
+requestAnimationFrame(dibujar);
+
+// ---------------------------------------------------------------- modo demo (sin ESP32)
+$('btnDemo').onclick = () => {
+  if (demoTimer) { pararDemo(); return; }
+  if (dispositivo && dispositivo.gatt.connected) dispositivo.gatt.disconnect();
+  activarAudio();
+  reiniciarDatos();
+  let k = 0, t = 24, h = 55;
+  $('btnDemo').textContent = 'Parar demo';
+  estado('Modo demo (datos inventados)', true);
+  demoTimer = setInterval(() => {
+    k++;
+    t += (Math.random() - 0.5) * 0.15 + (k > 40 && k < 70 ? 0.25 : k >= 70 && k < 95 ? -0.3 : 0);
+    h += (Math.random() - 0.5) * 1.5 + (k > 15 && k < 22 ? 4 : k >= 22 && k < 35 ? -2.2 : 0);
+    h = Math.max(20, Math.min(95, h));
+    recibir(t.toFixed(1) + ',' + h.toFixed(0) + ',30\n');
+  }, 1000);
+};
+function pararDemo() {
+  if (!demoTimer) return;
+  clearInterval(demoTimer); demoTimer = null;
+  $('btnDemo').textContent = 'Modo demo';
+  pararAlarma();
+  estado('Desconectado', false);
+}
+</script>
+</body>
+</html>
